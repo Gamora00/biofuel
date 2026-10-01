@@ -1,0 +1,181 @@
+import { SmartBin, Deposit, FeedstockAssessment, TrendPoint, PickupRequest } from "@/types/database";
+
+export const INITIAL_BINS: SmartBin[] = [
+  {
+    id: "BIN-001",
+    name: "BIN-001",
+    location: "NU Bacolod Collection Site",
+    status: "Online",
+    capacity_kg: 50.0,
+    current_weight_kg: 34.72,
+    fill_level_pct: 67,
+    temp_c: 28.4,
+    battery_pct: 95,
+    device_id: "ESP32-A1F3C",
+    lid_status: "Safe",
+    last_comm_at: "2 min ago",
+  },
+  {
+    id: "BIN-002",
+    name: "BIN-002",
+    location: "Bacolod City Plaza Hub",
+    status: "Online",
+    capacity_kg: 50.0,
+    current_weight_kg: 44.15,
+    fill_level_pct: 88,
+    temp_c: 29.1,
+    battery_pct: 88,
+    device_id: "ESP32-B88D1",
+    lid_status: "Safe",
+    last_comm_at: "4 min ago",
+  },
+  {
+    id: "BIN-003",
+    name: "BIN-003",
+    location: "Talisay Bio Refinery Drop",
+    status: "Online",
+    capacity_kg: 100.0,
+    current_weight_kg: 41.20,
+    fill_level_pct: 41,
+    temp_c: 27.6,
+    battery_pct: 99,
+    device_id: "ESP32-C449E",
+    lid_status: "Safe",
+    last_comm_at: "1 min ago",
+  },
+];
+
+export const INITIAL_DEPOSITS: Record<string, Deposit[]> = {
+  "BIN-001": [
+    {
+      id: "dep-1",
+      bin_id: "BIN-001",
+      source_name: "Restaurant A",
+      deposit_code: "DEP-0134",
+      weight_kg: 2.9,
+      status: "Verified",
+      deposited_at: "2026-09-16T18:24:00Z",
+      formatted_time: "6:24 PM",
+    },
+    {
+      id: "dep-2",
+      bin_id: "BIN-001",
+      source_name: "School Canteen",
+      deposit_code: "DEP-0133",
+      weight_kg: 2.1,
+      status: "Verified",
+      deposited_at: "2026-09-16T16:12:00Z",
+      formatted_time: "4:12 PM",
+    },
+    {
+      id: "dep-3",
+      bin_id: "BIN-001",
+      source_name: "Restaurant B",
+      deposit_code: "DEP-0131",
+      weight_kg: 5.4,
+      status: "Verified",
+      deposited_at: "2026-09-16T13:40:00Z",
+      formatted_time: "1:40 PM",
+    },
+  ],
+  "BIN-002": [
+    {
+      id: "dep-4",
+      bin_id: "BIN-002",
+      source_name: "Inasal Grill House",
+      deposit_code: "DEP-0135",
+      weight_kg: 6.2,
+      status: "Verified",
+      deposited_at: "2026-09-16T19:05:00Z",
+      formatted_time: "7:05 PM",
+    },
+    {
+      id: "dep-5",
+      bin_id: "BIN-002",
+      source_name: "Central Market Foodcourt",
+      deposit_code: "DEP-0132",
+      weight_kg: 4.8,
+      status: "Verified",
+      deposited_at: "2026-09-16T15:20:00Z",
+      formatted_time: "3:20 PM",
+    },
+  ],
+  "BIN-003": [
+    {
+      id: "dep-6",
+      bin_id: "BIN-003",
+      source_name: "North Commissary Kitchen",
+      deposit_code: "DEP-0130",
+      weight_kg: 11.5,
+      status: "Verified",
+      deposited_at: "2026-09-16T11:15:00Z",
+      formatted_time: "11:15 AM",
+    },
+  ],
+};
+
+export const INITIAL_ASSESSMENTS: Record<string, FeedstockAssessment> = {
+  "BIN-001": {
+    id: "assess-1",
+    bin_id: "BIN-001",
+    status: "Pretreatment Required",
+    details: "Elevated FFA • Water content • Visible solids detected. Requires technical review.",
+    predicted_ffa: 2.17,
+    lab_ffa: 2.05,
+    review_requested: false,
+  },
+  "BIN-002": {
+    id: "assess-2",
+    bin_id: "BIN-002",
+    status: "Pretreatment Required",
+    details: "Slightly elevated moisture level • High frying load. Filtration advised before transesterification.",
+    predicted_ffa: 1.89,
+    lab_ffa: 1.82,
+    review_requested: false,
+  },
+  "BIN-003": {
+    id: "assess-3",
+    bin_id: "BIN-003",
+    status: "Optimal Quality",
+    details: "Low FFA • Clear golden profile • Moisture within ASTM D6751 threshold. Ready for esterification.",
+    predicted_ffa: 0.94,
+    lab_ffa: 0.88,
+    review_requested: false,
+  },
+};
+
+export const INITIAL_TRENDS: Record<string, TrendPoint[]> = {
+  "BIN-001": [
+    { label: "8:00 AM", time: "08:00", weight: 24.32 },
+    { label: "10:00 AM", time: "10:00", weight: 25.10 },
+    { label: "12:00 PM", time: "12:00", weight: 26.40 },
+    { label: "1:40 PM", time: "13:40", weight: 29.72 },
+    { label: "4:12 PM", time: "16:12", weight: 31.82 },
+    { label: "6:24 PM", time: "18:24", weight: 34.72 },
+  ],
+  "BIN-002": [
+    { label: "8:00 AM", time: "08:00", weight: 33.15 },
+    { label: "11:00 AM", time: "11:00", weight: 35.40 },
+    { label: "3:20 PM", time: "15:20", weight: 37.95 },
+    { label: "7:05 PM", time: "19:05", weight: 44.15 },
+  ],
+  "BIN-003": [
+    { label: "8:00 AM", time: "08:00", weight: 29.70 },
+    { label: "11:15 AM", time: "11:15", weight: 41.20 },
+    { label: "4:00 PM", time: "16:00", weight: 41.20 },
+  ],
+};
+
+export const INITIAL_PICKUP_REQUESTS: PickupRequest[] = [
+  {
+    id: "pr-101",
+    bin_id: "BIN-002",
+    requested_by: "Maria Reyes",
+    status: "Assigned",
+    current_fill_kg: 44.15,
+    priority: "Urgent",
+    scheduled_for: "Today, 8:30 PM",
+    notes: "Bin nearing 90% capacity after dinner rush.",
+    created_at: "1 hour ago",
+  },
+];
