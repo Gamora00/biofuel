@@ -1,8 +1,12 @@
 #include <WiFi.h>
 #include <WebServer.h>
+#include "esp_wifi.h"
 
 const char* ssid = "Converge_2.4GHz_qnS8";
 const char* password = "KT32ch8h";
+
+// Fallback alternate SSID in case router broadcasts 5G name on 2.4G as well
+const char* altSsid = "Converge_5GHz_qnS8";
 
 const int trigPin = 5;
 const int echoPin = 18;
@@ -152,6 +156,65 @@ void handleData() {
 }
 
 // ----------------------
+// WiFi Connection Helper with Diagnostic & Auto Fallback
+// ----------------------
+void setupWiFi() {
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.disconnect(true);
+  delay(200);
+
+  // Enable Channels 1-13 (Philippines/Asia regulatory domain)
+  wifi_country_t country = {
+    .cc = "PH",
+    .schan = 1,
+    .nchan = 13,
+    .max_tx_power = 20,
+    .policy = WIFI_COUNTRY_POLICY_AUTO
+  };
+  esp_wifi_set_country(&country);
+
+  Serial.println("\n[WiFi] Scanning nearby 2.4GHz networks...");
+  int n = WiFi.scanNetworks();
+  Serial.printf("[WiFi] Found %d networks:\n", n);
+  bool foundTargetSsid = false;
+  bool foundAltSsid = false;
+
+  for (int i = 0; i < n; ++i) {
+    String currentSsid = WiFi.SSID(i);
+    Serial.printf("  - %s (Channel %d, %d dBm)\n", currentSsid.c_str(), WiFi.channel(i), WiFi.RSSI(i));
+    if (currentSsid.equals(ssid)) foundTargetSsid = true;
+    if (currentSsid.equals(altSsid)) foundAltSsid = true;
+  }
+
+  const char* connectTarget = foundTargetSsid ? ssid : (foundAltSsid ? altSsid : ssid);
+  Serial.printf("\n[WiFi] Connecting to: %s ...\n", connectTarget);
+
+  WiFi.setAutoReconnect(true);
+  WiFi.persistent(true);
+  WiFi.begin(connectTarget, password);
+
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 25) {
+    delay(400);
+    Serial.print(".");
+    attempts++;
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    WiFi.setSleep(false); // Disable sleep for ultra-fast HTTP response
+    Serial.println("\n[WiFi] Connected Successfully!");
+    Serial.print("[WiFi] ESP32 IP Address: ");
+    Serial.println(WiFi.localIP());
+  } else {
+    Serial.printf("\n[WiFi] Failed to connect (Status code: %d).\n", WiFi.status());
+    // Start fallback hotspot so device is always accessible
+    WiFi.softAP("BioLoop-ESP32", "12345678");
+    Serial.print("[WiFi] Started Fallback AP: 'BioLoop-ESP32' (Pass: 12345678) IP: ");
+    Serial.println(WiFi.softAPIP());
+  }
+}
+
+// ----------------------
 // Setup
 // ----------------------
 void setup() {
@@ -160,23 +223,7 @@ void setup() {
   pinMode(trigPin, OUTPUT);
   pinMode(echoPin, INPUT);
 
-  WiFi.mode(WIFI_STA);
-  WiFi.setAutoReconnect(true);
-  WiFi.persistent(true);
-  WiFi.begin(ssid, password);
-
-  Serial.println("\nConnecting to WiFi...");
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(400);
-    Serial.print(".");
-  }
-
-  // Disable WiFi modem sleep to eliminate latency
-  WiFi.setSleep(false);
-
-  Serial.println("\nWiFi Connected!");
-  Serial.print("ESP32 IP Address: ");
-  Serial.println(WiFi.localIP());
+  setupWiFi();
 
   // Setup endpoints
   server.on("/data", HTTP_GET, handleData);
@@ -197,13 +244,13 @@ void setup() {
 // Loop
 // ----------------------
 void loop() {
-  // Auto-reconnect if WiFi disconnects
-  if (WiFi.status() != WL_CONNECTED) {
+  // If disconnected from router and not in AP mode, retry connection periodically
+  if (WiFi.status() != WL_CONNECTED && WiFi.getMode() == WIFI_STA) {
     delay(500);
     WiFi.reconnect();
     return;
   }
 
-  // Handle incoming HTTP requests only on demand
+  // Handle incoming HTTP requests
   server.handleClient();
 }
