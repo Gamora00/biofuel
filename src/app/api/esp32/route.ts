@@ -9,10 +9,24 @@ let latestSensorData: {
   source_ip?: string;
 } | null = null;
 
+// Rate-limiting throttle timestamp
+let lastFetchTime = 0;
+const THROTTLE_MS = 1500;
+
 // GET: Fetch telemetry from ESP32 IP address or return latest cached reading
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const esp32Ip = searchParams.get("ip") || "192.168.100.30";
+  const now = Date.now();
+
+  // Return fresh cached data if requested within throttle window (prevents request spam)
+  if (latestSensorData && (now - lastFetchTime < THROTTLE_MS)) {
+    return NextResponse.json({
+      success: true,
+      data: latestSensorData,
+      source: "cached_throttled",
+    });
+  }
 
   // If an IP is provided or default, fetch directly from the ESP32 over local network (No CORS issues in Node.js)
   if (esp32Ip) {
@@ -58,6 +72,7 @@ export async function GET(request: NextRequest) {
         timestamp: new Date().toISOString(),
         source_ip: esp32Ip,
       };
+      lastFetchTime = Date.now();
 
       // Print JSON to server terminal console
       console.log("\n[ESP32 Server Console JSON]:", JSON.stringify(latestSensorData));

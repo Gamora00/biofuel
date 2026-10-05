@@ -48,9 +48,14 @@ export const ESP32LiveBridge: React.FC<ESP32LiveBridgeProps> = ({
       const json = await res.json();
 
       if (json.success && json.data) {
-        console.log("[ESP32 JSON]:", JSON.stringify(json.data), json.data);
         setIsConnected(true);
-        setLastReading(json.data);
+        setLastReading((prev) => {
+          // Log only when value changes to avoid console spam
+          if (!prev || prev.level_percent !== json.data.level_percent || Math.abs(prev.distance_cm - json.data.distance_cm) >= 0.5) {
+            console.log("[ESP32 Stable JSON]:", json.data);
+          }
+          return json.data;
+        });
         onDataReceived(json.data);
         setTestingStatus("success");
       } else {
@@ -74,7 +79,7 @@ export const ESP32LiveBridge: React.FC<ESP32LiveBridgeProps> = ({
     }
   }, [ipAddress, fetchESP32Data]);
 
-  // Auto-polling interval every 2 seconds (2000ms) with overlapping guard
+  // Auto-polling interval every 3.5 seconds (prevents microcontroller overload)
   useEffect(() => {
     if (!autoPoll || !ipAddress) return;
 
@@ -82,7 +87,7 @@ export const ESP32LiveBridge: React.FC<ESP32LiveBridgeProps> = ({
       if (!isPolling) {
         fetchESP32Data(ipAddress);
       }
-    }, 2000);
+    }, 3500);
 
     return () => clearInterval(interval);
   }, [autoPoll, ipAddress, isPolling, fetchESP32Data]);
