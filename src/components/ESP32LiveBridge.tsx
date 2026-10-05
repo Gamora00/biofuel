@@ -1,12 +1,14 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
-import { Cpu, Wifi, WifiOff, RefreshCw, Settings, Check, AlertCircle } from "lucide-react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
+import { Cpu, Wifi, RefreshCw, Settings, Check, AlertCircle, Sliders } from "lucide-react";
 
 interface ESP32Data {
   bin_id: string;
   distance_cm: number;
   level_percent: number;
+  empty_distance_cm?: number;
+  full_distance_cm?: number;
   timestamp: string;
 }
 
@@ -20,77 +22,106 @@ export const ESP32LiveBridge: React.FC<ESP32LiveBridgeProps> = ({
   currentFillLevel,
 }) => {
   const [ipAddress, setIpAddress] = useState<string>("192.168.100.30");
+  const [emptyDistance, setEmptyDistance] = useState<number>(50.0);
+  const [fullDistance, setFullDistance] = useState<number>(5.0);
+
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
-  const [isPolling, setIsPolling] = useState(false);
-  const [autoPoll, setAutoPoll] = useState(true);
+
+  // States for actions to prevent button flicker / infinite "Testing..."
+  const [isTestingManual, setIsTestingManual] = useState(false);
+  const [isQuickSyncing, setIsQuickSyncing] = useState(false);
+  const [autoPoll, setAutoPoll] = useState(false); // DEFAULT TO FALSE to avoid infinite polling/spam
   const [lastReading, setLastReading] = useState<ESP32Data | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [testingStatus, setTestingStatus] = useState<"idle" | "testing" | "success" | "error">("idle");
 
-  // Load saved IP from localStorage or default to discovered 192.168.100.30
+  const isPollingRef = useRef(false);
+
+  // Load saved configurations from localStorage
   useEffect(() => {
     const savedIp = localStorage.getItem("bioloop_esp32_ip");
-    if (savedIp && savedIp !== "192.168.1.150") {
+    if (savedIp) {
       setIpAddress(savedIp);
     } else {
       setIpAddress("192.168.100.30");
       localStorage.setItem("bioloop_esp32_ip", "192.168.100.30");
     }
+
+    const savedEmpty = localStorage.getItem("bioloop_esp32_empty");
+    if (savedEmpty) setEmptyDistance(parseFloat(savedEmpty) || 50.0);
+
+    const savedFull = localStorage.getItem("bioloop_esp32_full");
+    if (savedFull) setFullDistance(parseFloat(savedFull) || 5.0);
   }, []);
 
-  const fetchESP32Data = useCallback(async (targetIp: string) => {
-    setIsPolling(true);
-    setErrorMessage(null);
+  const fetchESP32Data = useCallback(
+    async (targetIp: string, customEmpty = emptyDistance, customFull = fullDistance, isManual = false) => {
+      if (isPollingRef.current && !isManual) return;
+      isPollingRef.current = true;
 
-    try {
-      const res = await fetch(`/api/esp32?ip=${encodeURIComponent(targetIp)}`);
-      const json = await res.json();
-
-      if (json.success && json.data) {
-        setIsConnected(true);
-        setLastReading((prev) => {
-          // Log only when value changes to avoid console spam
-          if (!prev || prev.level_percent !== json.data.level_percent || Math.abs(prev.distance_cm - json.data.distance_cm) >= 0.5) {
-            console.log("[ESP32 Stable JSON]:", json.data);
-          }
-          return json.data;
-        });
-        onDataReceived(json.data);
-        setTestingStatus("success");
-      } else {
-        setIsConnected(false);
-        setErrorMessage(json.error || "ESP32 did not respond.");
-        setTestingStatus("error");
+      if (isManual) {
+        setIsTestingManual(true);
+        setTestingStatus("testing");
       }
-    } catch (err: any) {
-      setIsConnected(false);
-      setErrorMessage(err.message || "Failed to contact local API proxy.");
-      setTestingStatus("error");
-    } finally {
-      setIsPolling(false);
-    }
-  }, [onDataReceived]);
+      setErrorMessage(null);
 
-  // Initial fetch on mount
+      try {
+        const queryParams = new URLSearchParams({
+          ip: targetIp,
+          empty: customEmpty.toString(),
+          full: customFull.toString(),
+          ...(isManual ? { force: "true" } : {}),
+        });
+
+        const res = await fetch(`/api/esp32?${queryParams.toString()}`);
+        const json = await res.json();
+
+        if (json.success && json.data) {
+          setIsConnected(true);
+          setLastReading(json.data);
+          onDataReceived(json.data);
+          if (isManual) {
+            setTestingStatus("success");
+            console.log("[ESP32 Manual Test Success]:", json.data);
+          }
+        } else {
+          setIsConnected(false);
+          setErrorMessage(json.error || "ESP32 did not respond.");
+          if (isManual) setTestingStatus("error");
+        }
+      } catch (err: any) {
+        setIsConnected(false);
+        setErrorMessage(err.message || "Failed to contact local API proxy.");
+        if (isManual) setTestingStatus("error");
+      } finally {
+        isPollingRef.current = false;
+        if (isManual) setIsTestingManual(false);
+        setIsQuickSyncing(false);
+      }
+    },
+    [emptyDistance, fullDistance, onDataReceived]
+  );
+
+  // Initial single check on mount (does not loop)
   useEffect(() => {
     if (ipAddress) {
-      fetchESP32Data(ipAddress);
+      fetchESP32Data(ipAddress, emptyDistance, fullDistance, false);
     }
-  }, [ipAddress, fetchESP32Data]);
+  }, [ipAddress, emptyDistance, fullDistance, fetchESP32Data]);
 
-  // Auto-polling interval every 3.5 seconds (prevents microcontroller overload)
+  // Controlled auto-polling ONLY when user explicitly toggles it ON
   useEffect(() => {
     if (!autoPoll || !ipAddress) return;
 
     const interval = setInterval(() => {
-      if (!isPolling) {
-        fetchESP32Data(ipAddress);
+      if (!isPollingRef.current) {
+        fetchESP32Data(ipAddress, emptyDistance, fullDistance, false);
       }
-    }, 3500);
+    }, 4500);
 
     return () => clearInterval(interval);
-  }, [autoPoll, ipAddress, isPolling, fetchESP32Data]);
+  }, [autoPoll, ipAddress, emptyDistance, fullDistance, fetchESP32Data]);
 
   const handleSaveAndTest = (e: React.FormEvent) => {
     e.preventDefault();
@@ -98,30 +129,35 @@ export const ESP32LiveBridge: React.FC<ESP32LiveBridgeProps> = ({
     if (!cleanIp) return;
 
     localStorage.setItem("bioloop_esp32_ip", cleanIp);
-    setTestingStatus("testing");
-    fetchESP32Data(cleanIp);
+    localStorage.setItem("bioloop_esp32_empty", emptyDistance.toString());
+    localStorage.setItem("bioloop_esp32_full", fullDistance.toString());
+
+    fetchESP32Data(cleanIp, emptyDistance, fullDistance, true);
+  };
+
+  const handleQuickRefresh = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setIsQuickSyncing(true);
+    fetchESP32Data(ipAddress, emptyDistance, fullDistance, true);
   };
 
   const simulateHardwareData = () => {
-    // Generate realistic reading
-    const simulatedDist = Number((6.5 + Math.random() * 2.0).toFixed(2));
-    const emptyDist = 20.0;
-    const fullDist = 5.0;
-    const simulatedLevel = Number(
-      Math.min(
-        100,
-        Math.max(0, ((emptyDist - simulatedDist) / (emptyDist - fullDist)) * 100)
-      ).toFixed(1)
+    // Generate realistic simulated reading between 5 and 50 cm
+    const simDistance = Number((8.0 + Math.random() * 25.0).toFixed(1));
+    const simLevel = Math.round(
+      Math.min(100, Math.max(0, ((emptyDistance - simDistance) / (emptyDistance - fullDistance)) * 100))
     );
 
     const mockData: ESP32Data = {
       bin_id: "BIN-001",
-      distance_cm: simulatedDist,
-      level_percent: simulatedLevel,
+      distance_cm: simDistance,
+      level_percent: simLevel,
+      empty_distance_cm: emptyDistance,
+      full_distance_cm: fullDistance,
       timestamp: new Date().toISOString(),
     };
 
-    console.log("[ESP32 JSON]:", JSON.stringify(mockData), mockData);
+    console.log("[ESP32 Mock JSON Console]:", mockData);
     setIsConnected(true);
     setLastReading(mockData);
     onDataReceived(mockData);
@@ -131,7 +167,7 @@ export const ESP32LiveBridge: React.FC<ESP32LiveBridgeProps> = ({
 
   return (
     <>
-      {/* ESP32 Quick Status Pill */}
+      {/* ESP32 Quick Status Pill in Header */}
       <div className="flex items-center gap-2">
         <div
           onClick={() => setIsModalOpen(true)}
@@ -140,12 +176,15 @@ export const ESP32LiveBridge: React.FC<ESP32LiveBridgeProps> = ({
               ? "bg-[#e8f5ed] border-[#c4e4d0] text-[#194a32] hover:bg-[#ddf0e4]"
               : "bg-white border-[#e2e8e5] text-gray-600 hover:bg-gray-50"
           }`}
+          title="Click to configure ESP32 settings & calibration"
         >
           <div className="flex items-center gap-1.5">
             <span
               className={`w-2 h-2 rounded-full ${
                 isConnected
-                  ? "bg-[#22c55e] animate-pulse"
+                  ? autoPoll
+                    ? "bg-[#22c55e] animate-ping"
+                    : "bg-[#22c55e]"
                   : "bg-gray-400"
               }`}
             />
@@ -164,24 +203,25 @@ export const ESP32LiveBridge: React.FC<ESP32LiveBridgeProps> = ({
           <Settings className="w-3.5 h-3.5 text-gray-400 hover:text-gray-600" />
         </div>
 
-        {/* Quick Poll Button */}
+        {/* Quick Poll Button on Header Banner */}
         {ipAddress && (
           <button
-            onClick={() => fetchESP32Data(ipAddress)}
-            title="Poll ESP32 now"
+            onClick={handleQuickRefresh}
+            title="Read stable ESP32 value now"
             className="p-1.5 bg-white hover:bg-gray-50 border border-[#e2e8e5] rounded-full text-gray-500 shadow-xs transition-colors"
           >
             <RefreshCw
-              className={`w-3.5 h-3.5 ${isPolling ? "animate-spin text-[#194a32]" : ""}`}
+              className={`w-3.5 h-3.5 ${isQuickSyncing ? "animate-spin text-[#194a32]" : ""}`}
             />
           </button>
         )}
       </div>
 
-      {/* ESP32 Settings & Debug Modal */}
+      {/* ESP32 Settings & Live Calibration Modal */}
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4">
           <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-xl border border-[#e5e9e6]">
+            {/* Modal Header */}
             <div className="flex items-center justify-between pb-3 border-b border-[#e5ece8]">
               <div className="flex items-center gap-2.5">
                 <div className="w-9 h-9 rounded-xl bg-[#eef6f1] flex items-center justify-center text-[#194a32]">
@@ -192,49 +232,92 @@ export const ESP32LiveBridge: React.FC<ESP32LiveBridgeProps> = ({
                     ESP32 Hardware Bridge
                   </h3>
                   <p className="text-xs text-gray-400">
-                    Source: <code className="bg-gray-100 px-1 py-0.5 rounded text-[11px]">sensors/sensors.ino</code>
+                    Sketch: <code className="bg-gray-100 px-1 py-0.5 rounded text-[11px]">sensors/sensors.ino</code>
                   </p>
                 </div>
               </div>
               <button
                 onClick={() => setIsModalOpen(false)}
-                className="text-gray-400 hover:text-gray-600 p-1 rounded-full text-sm"
+                className="text-gray-400 hover:text-gray-600 p-1 rounded-full text-sm font-bold"
               >
                 ✕
               </button>
             </div>
 
             <form onSubmit={handleSaveAndTest} className="space-y-4 pt-4">
+              {/* IP Input */}
               <div>
                 <label className="block text-xs font-semibold text-gray-700 mb-1">
                   ESP32 IP Address / Hostname
                 </label>
-                <div className="relative">
-                  <input
-                    type="text"
-                    value={ipAddress}
-                    onChange={(e) => setIpAddress(e.target.value)}
-                    placeholder="e.g., 192.168.1.150 or bioloop-bin001.local"
-                    className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-xs focus:outline-none focus:border-[#194a32] font-mono"
-                    required
-                  />
-                </div>
+                <input
+                  type="text"
+                  value={ipAddress}
+                  onChange={(e) => setIpAddress(e.target.value)}
+                  placeholder="e.g. 192.168.100.30"
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-xs focus:outline-none focus:border-[#194a32] font-mono"
+                  required
+                />
                 <p className="text-[11px] text-gray-400 mt-1">
-                  Check your Arduino Serial Monitor at 115200 baud for: <br />
-                  <span className="font-mono text-gray-600">
-                    &quot;ESP32 IP Address: 192.168.x.x&quot;
-                  </span>
+                  IP from Serial Monitor: <span className="font-mono text-gray-700 font-semibold">192.168.100.30</span>
                 </p>
               </div>
 
-              {/* Auto Poll Toggle */}
+              {/* Calibration Settings */}
+              <div className="bg-[#f8faf9] p-3.5 rounded-xl border border-[#e5ece8] space-y-3">
+                <div className="flex items-center gap-1.5 text-xs font-bold text-gray-800">
+                  <Sliders className="w-3.5 h-3.5 text-[#194a32]" />
+                  <span>Level Calibration (Container Depth)</span>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-medium text-gray-600 mb-1">
+                      Empty Dist (0%)
+                    </label>
+                    <div className="relative">
+                      <input
+                        type="number"
+                        step="1"
+                        min="10"
+                        max="200"
+                        value={emptyDistance}
+                        onChange={(e) => setEmptyDistance(parseFloat(e.target.value) || 50)}
+                        className="w-full px-2.5 py-1.5 rounded-lg border border-gray-200 text-xs font-mono pr-8"
+                      />
+                      <span className="absolute right-2.5 top-1.5 text-[10px] text-gray-400 font-medium">cm</span>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-medium text-gray-600 mb-1">
+                      Full Dist (100%)
+                    </label>
+                    <div className="relative">
+                      <input
+                        type="number"
+                        step="1"
+                        min="2"
+                        max="50"
+                        value={fullDistance}
+                        onChange={(e) => setFullDistance(parseFloat(e.target.value) || 5)}
+                        className="w-full px-2.5 py-1.5 rounded-lg border border-gray-200 text-xs font-mono pr-8"
+                      />
+                      <span className="absolute right-2.5 top-1.5 text-[10px] text-gray-400 font-medium">cm</span>
+                    </div>
+                  </div>
+                </div>
+                <p className="text-[10px] text-gray-400">
+                  Default 50 cm empty & 5 cm full enables smooth level tracking as your hand moves above the sensor.
+                </p>
+              </div>
+
+              {/* Auto Poll Streaming Toggle */}
               <div className="flex items-center justify-between p-3 rounded-xl bg-[#f8faf9] border border-[#e5ece8]">
                 <div>
                   <p className="text-xs font-semibold text-gray-900">
                     Live Telemetry Streaming
                   </p>
                   <p className="text-[11px] text-gray-400">
-                    Automatically poll ESP32 every 4 seconds
+                    {autoPoll ? "Streaming updates every 4.5s" : "Disabled (prevents loops & unnecessary requests)"}
                   </p>
                 </div>
                 <label className="relative inline-flex items-center cursor-pointer">
@@ -248,11 +331,11 @@ export const ESP32LiveBridge: React.FC<ESP32LiveBridgeProps> = ({
                 </label>
               </div>
 
-              {/* Status and Error Banners */}
-              {testingStatus === "testing" && (
+              {/* Status Banner */}
+              {testingStatus === "testing" && isTestingManual && (
                 <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl text-xs text-blue-700 flex items-center gap-2">
                   <RefreshCw className="w-4 h-4 animate-spin" />
-                  <span>Connecting to http://{ipAddress}/data...</span>
+                  <span>Requesting stable telemetry from http://{ipAddress}/data...</span>
                 </div>
               )}
 
@@ -260,22 +343,11 @@ export const ESP32LiveBridge: React.FC<ESP32LiveBridgeProps> = ({
                 <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-[#194a32] space-y-1">
                   <div className="flex items-center gap-1.5 font-bold">
                     <Check className="w-4 h-4 text-emerald-600" />
-                    <span>ESP32 Connected Successfully!</span>
+                    <span>Stable Telemetry Received!</span>
                   </div>
-                  <div className="font-mono text-[11px] text-gray-600 pt-1">
-                    Distance: {lastReading.distance_cm} cm | Fill: {lastReading.level_percent}%
+                  <div className="font-mono text-[11px] text-gray-700 pt-1">
+                    Distance: <span className="font-bold text-gray-900">{lastReading.distance_cm} cm</span> | Fill: <span className="font-bold text-[#194a32]">{lastReading.level_percent}%</span>
                   </div>
-                </div>
-              )}
-
-              {/* Raw JSON Console View */}
-              {lastReading && (
-                <div className="bg-[#0f172a] text-emerald-400 p-3 rounded-xl border border-slate-800 text-[11px] font-mono overflow-x-auto shadow-inner">
-                  <div className="text-slate-400 text-[10px] mb-1 flex items-center justify-between border-b border-slate-800 pb-1">
-                    <span>LIVE JSON CONSOLE STREAM</span>
-                    <span className="text-slate-500">{new Date(lastReading.timestamp).toLocaleTimeString()}</span>
-                  </div>
-                  <pre className="whitespace-pre-wrap">{JSON.stringify(lastReading, null, 2)}</pre>
                 </div>
               )}
 
@@ -291,25 +363,37 @@ export const ESP32LiveBridge: React.FC<ESP32LiveBridgeProps> = ({
                 </div>
               )}
 
+              {/* Raw JSON Console */}
+              {lastReading && (
+                <div className="bg-[#0f172a] text-emerald-400 p-3 rounded-xl border border-slate-800 text-[11px] font-mono overflow-x-auto shadow-inner">
+                  <div className="text-slate-400 text-[10px] mb-1 flex items-center justify-between border-b border-slate-800 pb-1">
+                    <span>LIVE SENSOR JSON DATA</span>
+                    <span className="text-slate-500">{new Date(lastReading.timestamp).toLocaleTimeString()}</span>
+                  </div>
+                  <pre className="whitespace-pre-wrap">{JSON.stringify(lastReading, null, 2)}</pre>
+                </div>
+              )}
+
               {/* Action Buttons */}
               <div className="flex items-center gap-2 pt-2">
                 <button
                   type="button"
                   onClick={simulateHardwareData}
-                  className="px-3 py-2.5 rounded-xl border border-gray-200 hover:bg-gray-50 text-gray-700 text-xs font-semibold"
+                  className="px-3.5 py-2.5 rounded-xl border border-gray-200 hover:bg-gray-50 text-gray-700 text-xs font-semibold"
                   title="Simulate sensor reading"
                 >
                   Simulate
                 </button>
+
                 <button
                   type="submit"
-                  disabled={isPolling}
-                  className="flex-1 py-2.5 rounded-xl bg-[#194a32] hover:bg-[#143a27] text-white text-xs font-semibold shadow-sm flex items-center justify-center gap-1.5"
+                  disabled={isTestingManual}
+                  className="flex-1 py-2.5 rounded-xl bg-[#194a32] hover:bg-[#143a27] text-white text-xs font-semibold shadow-sm flex items-center justify-center gap-1.5 disabled:opacity-75"
                 >
-                  {isPolling ? (
+                  {isTestingManual ? (
                     <>
                       <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                      <span>Testing...</span>
+                      <span>Reading Sensor...</span>
                     </>
                   ) : (
                     <span>Connect & Test</span>

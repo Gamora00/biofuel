@@ -7,18 +7,19 @@ const char* password = "KT32ch8h";
 const int trigPin = 5;
 const int echoPin = 18;
 
-// CALIBRATION (Adjust to your physical container height in cm)
-const float EMPTY_DISTANCE = 20.0; // Distance when bin is empty (0%)
-const float FULL_DISTANCE = 5.0;   // Distance when bin is full (100%)
+// CALIBRATION (Default container height in cm - can be tuned via web interface)
+// 50.0 cm allows comfortable hand testing from 5cm (100% full) to 50cm (0% empty)
+float emptyDistance = 50.0; // Distance when bin is empty (0%)
+float fullDistance = 5.0;   // Distance when bin is full (100%)
 
 WebServer server(80);
 
 // Global smoothed values for rock-solid stability
 float stableDistance = -1.0;
-float stableLevel = -1.0;
+float stableLevel = 0.0;
 
 // ----------------------
-// Measure Raw Distance (Single Pulse)
+// Measure Raw Distance (Single Ultrasonic Pulse)
 // ----------------------
 float readSinglePulse() {
   digitalWrite(trigPin, LOW);
@@ -28,15 +29,16 @@ float readSinglePulse() {
   delayMicroseconds(10);
   digitalWrite(trigPin, LOW);
 
-  unsigned long duration = pulseIn(echoPin, HIGH, 26000); // ~4.4m max
+  // 26000us timeout (~4.4m max physical range)
+  unsigned long duration = pulseIn(echoPin, HIGH, 26000);
   if (duration == 0) {
-    return -1.0;
+    return -1.0; // No echo received (object out of range or acoustic absorption)
   }
   return (duration * 0.0343) / 2.0;
 }
 
 // ----------------------
-// Multi-Sample Median Filter (Rejects noise, echoes, and spikes)
+// Multi-Sample Median + Deadband Filter (Ultra-stable, zero jitter)
 // ----------------------
 float getStableDistance() {
   const int SAMPLES = 5;
@@ -45,19 +47,23 @@ float getStableDistance() {
 
   for (int i = 0; i < SAMPLES; i++) {
     float r = readSinglePulse();
-    // Valid acoustic range for HC-SR04 in container (0.5cm - 150cm)
-    if (r > 0.5 && r <= 150.0) {
+    // Valid acoustic range for HC-SR04 (2cm to 400cm)
+    if (r >= 2.0 && r <= 400.0) {
       readings[validCount++] = r;
     }
-    delay(10); // Acoustic echo dissipation delay
+    delay(12); // Acoustic reflection dissipation delay
   }
 
-  // If no echo returned (hand physically touching or covering transducer < 2cm)
+  // If no echo returned (open space, ceiling > 4m, or beam lost):
+  // Bin is EMPTY, NOT 0cm full! Return emptyDistance.
   if (validCount == 0) {
-    return 0.0;
+    if (stableDistance < 0) {
+      stableDistance = emptyDistance;
+    }
+    return stableDistance;
   }
 
-  // Sort samples to find median (outlier rejection)
+  // Bubble sort to obtain median (rejects acoustic spikes, bounces, noise)
   for (int i = 0; i < validCount - 1; i++) {
     for (int j = 0; j < validCount - i - 1; j++) {
       if (readings[j] > readings[j + 1]) {
@@ -70,12 +76,17 @@ float getStableDistance() {
 
   float median = readings[validCount / 2];
 
-  // Exponential Moving Average filter (70% previous + 30% new)
+  // Initialize on first reading
   if (stableDistance < 0) {
     stableDistance = median;
-  } else {
-    float diff = abs(median - stableDistance);
-    float alpha = (diff > 5.0) ? 0.60 : 0.30;
+    return stableDistance;
+  }
+
+  // Deadband filter: ignore microscopic changes (< 0.8 cm) to eliminate jitter
+  float diff = abs(median - stableDistance);
+  if (diff >= 0.8) {
+    // Adaptive smoothing: fast response on intentional movements, smooth on small shifts
+    float alpha = (diff > 5.0) ? 0.65 : 0.35;
     stableDistance = (stableDistance * (1.0 - alpha)) + (median * alpha);
   }
 
@@ -83,20 +94,18 @@ float getStableDistance() {
 }
 
 // ----------------------
-// Calculate Level with Deadband (Stable Integer)
+// Calculate Smooth Percentage Level with Deadband
 // ----------------------
 float calculateLevel(float distance) {
-  if (distance <= FULL_DISTANCE) return 100.0;
-  if (distance >= EMPTY_DISTANCE) return 0.0;
+  if (distance <= fullDistance) return 100.0;
+  if (distance >= emptyDistance) return 0.0;
 
-  float rawLevel = ((EMPTY_DISTANCE - distance) / (EMPTY_DISTANCE - FULL_DISTANCE)) * 100.0;
+  float rawLevel = ((emptyDistance - distance) / (emptyDistance - fullDistance)) * 100.0;
   if (rawLevel < 0.0) rawLevel = 0.0;
   if (rawLevel > 100.0) rawLevel = 100.0;
 
-  // Deadband: keep stable level unless change is >= 1.5% to prevent digit jitter
-  if (stableLevel < 0) {
-    stableLevel = round(rawLevel);
-  } else if (abs(rawLevel - stableLevel) >= 1.5) {
+  // 1.0% deadband to prevent flickering between adjacent percentage numbers
+  if (abs(rawLevel - stableLevel) >= 1.0) {
     stableLevel = round(rawLevel);
   }
 
@@ -107,18 +116,31 @@ float calculateLevel(float distance) {
 // API endpoint (/data)
 // ----------------------
 void handleData() {
+  // Allow dynamic calibration query parameters: e.g. /data?empty=60&full=5
+  if (server.hasArg("empty")) {
+    float customEmpty = server.arg("empty").toFloat();
+    if (customEmpty >= 10.0 && customEmpty <= 400.0) {
+      emptyDistance = customEmpty;
+    }
+  }
+  if (server.hasArg("full")) {
+    float customFull = server.arg("full").toFloat();
+    if (customFull >= 2.0 && customFull < emptyDistance) {
+      fullDistance = customFull;
+    }
+  }
+
   float distance = getStableDistance();
   float level = calculateLevel(distance);
 
   String json = "{";
   json += "\"bin_id\":\"BIN-001\",";
   json += "\"distance_cm\":" + String(distance, 1) + ",";
-  json += "\"level_percent\":" + String(level, 0);
+  json += "\"level_percent\":" + String(level, 0) + ",";
+  json += "\"empty_distance_cm\":" + String(emptyDistance, 1) + ",";
+  json += "\"full_distance_cm\":" + String(fullDistance, 1) + ",";
+  json += "\"status\":\"stable\"";
   json += "}";
-
-  // Log only when data is actually requested
-  Serial.print("[Sensor Request]: ");
-  Serial.println(json);
 
   // Prevent ESP32 socket exhaustion & enable CORS
   server.sendHeader("Access-Control-Allow-Origin", "*");
@@ -168,6 +190,7 @@ void setup() {
 
   server.begin();
   Serial.println("Stable Sensor Server active on port 80 (/data)");
+  Serial.printf("Default calibration: 0%% at %.1f cm | 100%% at %.1f cm\n", emptyDistance, fullDistance);
 }
 
 // ----------------------
@@ -181,6 +204,6 @@ void loop() {
     return;
   }
 
-  // Handle incoming HTTP requests only when requested
+  // Handle incoming HTTP requests only on demand
   server.handleClient();
 }
